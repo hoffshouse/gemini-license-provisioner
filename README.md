@@ -1,172 +1,278 @@
 # Gemini Enterprise License Provisioner for Google Workspace
 
-An automated, serverless solution on Google Cloud Platform that manages and provisions Gemini Enterprise (Standard Tier) licenses to Google Workspace domain users based on Google Groups membership. Deploy it to any GCP project / Workspace domain — see [setup_instructions.md](setup_instructions.md).
+A small, serverless service that keeps **Gemini Enterprise** license assignments in sync
+with **Google Group** membership. It runs on Google Cloud Run, is driven by Cloud
+Scheduler, and talks to Google Workspace through Domain‑Wide Delegation. An admin web UI
+handles configuration, ad‑hoc runs, and history.
+
+Deploy it to any GCP project and any Workspace domain — nothing in the repo is tied to a
+particular tenant. Start with **[setup_instructions.md](setup_instructions.md)**;
+**[EXAMPLE_DEPLOYMENT.md](EXAMPLE_DEPLOYMENT.md)** is the same guide with every value
+filled in.
 
 ---
 
-## Target Architecture
+## What it does
 
-- **Unified Web & Worker Service**: FastAPI application hosted on **GCP Cloud Run** providing both the administrative web dashboard and the scheduled sync endpoint (`POST /api/sync/run`).
-- **Scheduled Trigger**: **GCP Cloud Scheduler** triggers the worker endpoint on a user-defined cron schedule with OIDC authentication.
-- **Persistence & Auditing**: **GCP Firestore** in Native mode storing application configuration (`config/gemini_provisioner`) and complete execution run logs (`sync_history`).
-- **Google Workspace Integration**: Domain-Wide Delegation (DWD) using a dedicated GCP Service Account to interact with the **Admin SDK Directory API** and **Enterprise License Manager API**.
-- **CI/CD & IaC**: **GitHub Actions** pipeline authenticating via **Workload Identity Federation (WIF)** and deploying infrastructure via Terraform / `gcloud`.
+- On a schedule (Cloud Scheduler cron) or on demand, reads the **direct members** of a
+  configured set of Google Groups.
+- Deduplicates users, then for each one checks the target product/SKU and **assigns the
+  license if it is missing**.
+- Records every run — counts, per‑item errors, timing — to Firestore and, optionally,
+  emails a full report.
 
-```
-                    ┌─────────────────────────┐
-                    │  Google Cloud Scheduler │
-                    └───────────┬─────────────┘
-                                │ (Cron trigger via OIDC)
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Cloud Run: Single Container                 │
-│                                                             │
-│   FastAPI Web Admin UI          Sync Worker Engine          │
-│   • Dashboard & Analytics       • Flat Group Evaluation     │
-│   • Group Selection UI          • Deduplicate User Emails   │
-│   • Cron Schedule UI            • Check & Assign Licenses   │
-│   • DWD Connectivity Test       • Flag Nested Groups        │
-└──────────────┬──────────────────────────────┬───────────────┘
-               │                              │
-               ▼                              ▼
-    ┌────────────────────┐      ┌───────────────────────────┐
-    │  Cloud Firestore   │      │ Google Workspace APIs     │
-    │  • config          │      │ • Admin Directory API     │
-    │  • sync_history    │      │ • Enterprise Licensing    │
-    └────────────────────┘      └───────────────────────────┘
-```
+## What it does not do
+
+- **No deprovisioning.** Licenses are only added. Removal is left to normal offboarding.
+- **No nested‑group expansion.** A group that contains another group is skipped and
+  flagged as an error in the run history (`Nested groups are not supported for licensing`).
+- **No user creation / directory changes.** It only reads the directory and manages
+  license SKUs.
 
 ---
 
-## Key Design Principles & Simplifications
+## Architecture
 
-1. **Flat Group Membership (No Nesting)**:
-   - Queries direct group members only.
-   - If a member is a nested group (`type == "GROUP"`), the provisioner skips it, logs a clear warning, and records an explicit error in the sync history (`Nested groups are not supported for licensing`).
-2. **Additive Provisioning (Deprovisioning Out of Scope)**:
-   - Users in monitored groups receive the Gemini license if they do not already have it.
-   - Deprovisioning is intentionally decoupled and left to standard enterprise offboarding.
-3. **Zero-Build Modern Frontend**:
-   - Server-rendered Jinja2 templates styled with Tailwind CSS via CDN. No Node.js, npm, or webpack pipeline needed.
-4. **Keyless GitHub Actions Deployment**:
-   - Uses Workload Identity Federation (WIF) — no long-lived service account keys stored in GitHub Secrets.
-5. **Run Notifications**:
-   - Optional post-run email (Gmail API via DWD) with full run detail and a link back to Run History; choose "all runs" or "failures only" on the Sync Schedule page.
-6. **Super-admin-only access (optional)**:
-   - Behind Identity-Aware Proxy, the app checks the IAP-asserted user is a Google Workspace super administrator before serving any page or mutating API.
+```
+              ┌───────────────────────┐
+              │   Cloud Scheduler     │  cron → OIDC-authenticated POST
+              └───────────┬───────────┘
+                          ▼
+      (optional) ┌──────────────────┐
+   Google SSO ──►│ Identity-Aware   │  authenticates the browser / caller
+                 │ Proxy (IAP)      │
+                 └────────┬─────────┘
+                          ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │  Cloud Run — one container (FastAPI)                     │
+   │                                                         │
+   │  Admin UI                     Sync engine               │
+   │  • Dashboard / history        • Read direct members     │
+   │  • Group selection            • Dedupe users            │
+   │  • Schedule + notifications   • Check & assign SKU       │
+   │  • DWD connectivity test      • Flag nested groups       │
+   │  • Super-admin auth check     • Record run + notify      │
+   └───────┬──────────────────┬───────────────────┬──────────┘
+           ▼                  ▼                   ▼
+   ┌──────────────┐   ┌─────────────────┐  ┌──────────────────────┐
+   │  Firestore   │   │ Workspace APIs  │  │  Gmail API           │
+   │ • config     │   │ • Admin SDK     │  │  (run-report email,  │
+   │ • sync_hist. │   │   Directory     │  │   optional)          │
+   └──────────────┘   │ • Licensing     │  └──────────────────────┘
+                      └─────────────────┘
+   Build/deploy: GitHub Actions → Workload Identity Federation → Artifact Registry → Cloud Run
+```
+
+| Component | Role |
+| :--- | :--- |
+| **Cloud Run** (`app/`) | Single FastAPI container: admin UI + `POST /api/sync/run` worker endpoint |
+| **Cloud Scheduler** | Fires `POST /api/sync/run` on a cron schedule with an OIDC token |
+| **Firestore** (Native mode) | `config/gemini_provisioner` (settings) and `sync_history/*` (run logs) |
+| **Domain‑Wide Delegation** | The runtime service account impersonates a Workspace admin — **keyless**, via the IAM Credentials API — to call the Admin SDK Directory, Enterprise License Manager, and (optionally) Gmail APIs |
+| **Identity‑Aware Proxy** (optional) | Authenticates access; the app additionally requires the user to be a Workspace **super admin** |
+| **GitHub Actions + WIF** | Builds the image and deploys to Cloud Run with no long‑lived keys |
+| **Terraform** (`terraform/`) | Reference infrastructure‑as‑code for the same resources; the CI pipeline deploys with `gcloud`, so Terraform is optional |
 
 ---
 
-## Directory Structure
+## Repository layout
 
 ```
-gemini-license-provisioner/
-├── .github/
-│   └── workflows/
-│       └── deploy.yml              # GitHub Actions CI/CD with WIF & Cloud Run deployment
 ├── app/
-│   ├── static/
-│   │   └── css/custom.css          # Styling touches & keyframes
-│   ├── templates/
-│   │   ├── base.html               # Shared layout (Tailwind CDN, navbar, alerts)
-│   │   ├── dashboard.html          # Overview cards, quick trigger, last sync status
-│   │   ├── groups.html             # List domain groups, select groups to track
-│   │   ├── schedule.html           # Update sync frequency & Cloud Scheduler trigger
-│   │   ├── settings.html           # DWD connectivity test, SKU config, admin email
-│   │   └── history.html            # Sync run history table with error logs
-│   ├── __init__.py
-│   ├── main.py                     # FastAPI routes (UI + POST /api/sync/run)
-│   ├── config.py                   # Environment & runtime settings
-│   ├── auth.py                     # IAP JWT verification + Workspace super-admin check
-│   ├── firestore_db.py             # Firestore client for config & history
-│   ├── workspace_client.py         # Google Workspace DWD, Directory, Licensing & Gmail APIs
-│   ├── notifications.py            # Post-run email reports (Gmail API via DWD)
-│   ├── sync_worker.py              # Core sync engine (direct members, dedupe, assign SKU)
-│   └── scheduler_service.py        # Programmatic Cloud Scheduler API client
-├── terraform/
-│   ├── main.tf                     # Cloud Run, Scheduler, IAM, Firestore, APIs
-│   ├── variables.tf                # Parameter declarations (project_id, region, domain)
-│   ├── outputs.tf                  # Web UI URL, Service Account email, WIF Provider ID
-│   └── terraform.tfvars.example    # Starter variable values
-├── tests/
-│   ├── __init__.py
-│   ├── test_sync.py                # Unit test for sync logic & nested group handling
-│   └── test_api.py                 # FastAPI endpoint & view tests
+│   ├── main.py               # FastAPI app: routes, middleware, template wiring
+│   ├── config.py             # Settings (env-var backed) + AUTH_ENABLED
+│   ├── auth.py               # IAP JWT verification + Workspace super-admin check
+│   ├── workspace_client.py   # DWD credentials + Directory / Licensing / Gmail clients
+│   ├── sync_worker.py        # Core sync engine
+│   ├── notifications.py      # Post-run email report (Gmail API)
+│   ├── firestore_db.py       # Config + run-history persistence
+│   ├── scheduler_service.py  # Reads/updates the Cloud Scheduler job from the UI
+│   ├── templates/*.html      # Server-rendered Jinja2 views (Tailwind via CDN)
+│   └── static/css/custom.css
+├── tests/                    # pytest: test_api, test_auth, test_notifications, test_sync
 ├── scripts/
-│   └── setup_wif.sh                # Helper script to bootstrap WIF for your GCP project
-├── setup_instructions.md           # Step-by-step setup (GCP, DWD scopes, WIF, GitHub)
-├── Dockerfile                      # Cloud Run container definition
-├── requirements.txt                # Lean Python dependencies
-└── .gitignore                      # Python, Terraform, GCP credential excludes
+│   ├── setup_wif.sh          # One-time Workload Identity Federation bootstrap
+│   └── test_local.py         # Dependency-free smoke test of the sync engine
+├── terraform/                # main.tf, variables.tf, outputs.tf, terraform.tfvars.example
+├── .github/workflows/deploy.yml   # Build + deploy pipeline (repo-variable driven)
+├── Dockerfile
+├── requirements.txt
+├── setup_instructions.md     # Full deployment guide
+└── EXAMPLE_DEPLOYMENT.md     # The guide with example values filled in
 ```
 
 ---
 
-## Quickstart: Local Development & Testing
+## Dependencies
 
-### 1. Set up Virtual Environment
+### Runtime (Python, `requirements.txt`)
+
+| Package | Why |
+| :--- | :--- |
+| `fastapi`, `uvicorn[standard]` | Web framework + ASGI server |
+| `jinja2`, `python-multipart` | Server-rendered templates, form parsing |
+| `pydantic`, `pydantic-settings` | Typed settings from environment variables |
+| `google-cloud-firestore` | Config + run history |
+| `google-cloud-scheduler` | Read/update the schedule from the UI |
+| `google-api-python-client` | Admin SDK Directory, Enterprise License Manager, Gmail |
+| `google-auth`, `google-auth-oauthlib`, `google-auth-httplib2` | Auth: keyless DWD (IAM Credentials signer), IAP JWT verification |
+| `requests` | Transitive HTTP needs |
+| `pytest`, `httpx` | Test suite only (kept here for convenience) |
+
+Front-end assets (Tailwind, Font Awesome) load from public CDNs at page render time — no
+Node/npm build.
+
+### Google Cloud APIs (enabled during setup)
+
+`run`, `cloudscheduler`, `firestore`, `artifactregistry`, `cloudbuild`, `iam`,
+`iamcredentials`, `admin` (Admin SDK), `licensing` (Enterprise License Manager). IAP
+(`iap`) and Gmail (`gmail`) only if you use those features.
+
+### Google Cloud resources
+
+One project with billing, a Firestore database (Native mode), an Artifact Registry
+Docker repo, one runtime service account (also used by CI), a Cloud Scheduler service
+account, a Cloud Run service, a Cloud Scheduler job, and a Workload Identity pool/provider
+for GitHub Actions. All created by `setup_instructions.md` (or `terraform/`).
+
+### Google Workspace
+
+- A Cloud Identity / Workspace tenant on your domain.
+- A **super administrator** to register Domain‑Wide Delegation once.
+- A real, active, licensed **delegated‑admin user** the service impersonates at runtime.
+- Assignable **Gemini Enterprise** SKU seats.
+
+### CI/CD
+
+GitHub Actions with repository **secrets** `WIF_PROVIDER`, `WIF_SERVICE_ACCOUNT` and the
+repository **variables** in the table below.
+
+---
+
+## Configuration reference
+
+All configuration is environment variables on the Cloud Run service. Terraform and the
+deploy workflow set them from **GitHub Actions repository variables** (see
+[setup_instructions.md](setup_instructions.md)); a few can also be changed at runtime
+from the admin UI, which persists them to Firestore.
+
+| Variable | Required | Default | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GCP_PROJECT_ID` | yes | — | Project for Firestore/Scheduler clients |
+| `GCP_REGION` | no | `us-central1` | Region for the Scheduler client |
+| `RUNTIME_SERVICE_ACCOUNT_EMAIL` | yes (on Cloud Run) | — | The attached service account; needed for keyless DWD |
+| `DELEGATED_ADMIN_EMAIL` | yes | placeholder | Workspace admin the service impersonates (also editable on the Settings page) |
+| `PRODUCT_ID` / `SKU_ID` | no | `Google-Apps` / `101031` | License product/SKU to assign (editable on the Settings page) |
+| `CLOUD_SCHEDULER_JOB_NAME` | no | `gemini-license-sync-job` | Job the UI reads/updates |
+| `IAP_AUDIENCE` | no | unset | **Turns on** IAP + super-admin enforcement; the IAP JWT `aud` to verify |
+| `SYNC_INVOKER_SA_EMAIL` | no | unset | Scheduler SA allowed through `POST /api/sync/run` when enforcement is on |
+| `AUTH_BOOTSTRAP_ADMINS` | no | empty | Comma-separated break-glass admin emails |
+| `SUPER_ADMIN_CACHE_TTL` | no | `300` | Seconds to cache each super-admin lookup |
+| `NOTIFICATION_SENDER_EMAIL` | no | delegated admin | Mailbox that run-report emails are sent as |
+| `PUBLIC_BASE_URL` | no | learned from traffic | Base URL for links in emails; set explicitly behind a custom domain |
+| `SERVICE_ACCOUNT_KEY_JSON` / `SERVICE_ACCOUNT_KEY_PATH` | no | unset | Local dev only: a DWD-enabled SA key instead of keyless impersonation |
+| `DEBUG` | no | `false` | Verbose logging |
+
+Repository variables consumed by `.github/workflows/deploy.yml`: `GCP_PROJECT_ID`
+(required), `GCP_REGION`, `CLOUD_RUN_SERVICE`, `ARTIFACT_REPO`, `CLOUD_SCHEDULER_JOB`,
+`DELEGATED_ADMIN_EMAIL`, `IAP_AUDIENCE`, `SYNC_INVOKER_SA_EMAIL`, `AUTH_BOOTSTRAP_ADMINS`,
+`SUPER_ADMIN_CACHE_TTL`, `NOTIFICATION_SENDER_EMAIL`, `PUBLIC_BASE_URL`,
+`CLOUD_RUN_ALLOW_UNAUTH` (`false` after enabling IAP), `CLOUD_RUN_ENABLE_IAP`
+(`true`/`false` to toggle IAP on deploy).
+
+---
+
+## Local development
 
 ```bash
-cd gemini-license-provisioner
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pytest tests/ -v            # unit tests, no cloud access
+python scripts/test_local.py   # dependency-mocked smoke test of the sync engine
 ```
 
-### 2. Run Unit Tests
+To run the app locally against real Google APIs you need DWD credentials. Keyless
+impersonation only works on GCP, so locally supply a service‑account key that has DWD:
 
 ```bash
-pytest tests/ -v
-```
-
-### 3. Run Application Locally
-
-```bash
-export GCP_PROJECT_ID="your-gcp-project-id"
-export DELEGATED_ADMIN_EMAIL="workspace-admin@your-domain.com"                 # a real, active admin user
-export RUNTIME_SERVICE_ACCOUNT_EMAIL="<sa-name>@<your-gcp-project-id>.iam.gserviceaccount.com"
-export PRODUCT_ID="Google-Apps"
-export SKU_ID="101031"
-
+export GCP_PROJECT_ID="your-project"
+export DELEGATED_ADMIN_EMAIL="workspace-admin@your-domain.com"
+export SERVICE_ACCOUNT_KEY_JSON="$(cat path/to/dwd-sa-key.json)"
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
-Visit `http://localhost:8080` to access the Admin Web UI.
+Without credentials the UI still renders; calls that hit Google APIs will error.
 
 ---
 
-## Deployment to GCP
+## Deployment
 
-For complete, step-by-step instructions — filling in your own project, region, service
-account, and Workspace domain — see [setup_instructions.md](setup_instructions.md).
-[`EXAMPLE_DEPLOYMENT.md`](EXAMPLE_DEPLOYMENT.md) shows one set of values filled in end to end.
+See **[setup_instructions.md](setup_instructions.md)** for the full walkthrough (GCP
+project, Firestore, service account, DWD, Workload Identity Federation, GitHub Actions,
+first configuration, notifications, and IAP). A pushed commit to `main` builds and
+deploys automatically.
 
-### Privileges required to deploy
+### Privileges to deploy (summary)
 
-**Google Cloud** (operator, on your project): `roles/owner`, or the granular set of
-`serviceusage.serviceUsageAdmin`, `datastore.owner`, `iam.serviceAccountAdmin`,
-`resourcemanager.projectIamAdmin`, `run.admin`, `artifactregistry.admin`,
-`cloudscheduler.admin`, and `iam.workloadIdentityPoolAdmin`.
+- **GCP operator**: `roles/owner`, or `serviceusage.serviceUsageAdmin` +
+  `datastore.owner` + `iam.serviceAccountAdmin` + `resourcemanager.projectIamAdmin` +
+  `run.admin` + `artifactregistry.admin` + `cloudscheduler.admin` +
+  `iam.workloadIdentityPoolAdmin`.
+- **Runtime/CI service account**: `datastore.user`, `cloudscheduler.admin`,
+  `logging.logWriter`, `run.admin`, `artifactregistry.admin`, `iam.serviceAccountUser`,
+  and `iam.serviceAccountTokenCreator` **on itself** (keyless DWD).
+- **Workspace**: a super admin to register DWD once, plus the delegated‑admin user.
 
-**Google Cloud** (the app service account, used for both runtime and CI/CD):
-`datastore.user`, `cloudscheduler.admin`, `logging.logWriter`, `run.admin`,
-`artifactregistry.admin`, `iam.serviceAccountUser`, and
-`iam.serviceAccountTokenCreator` **on itself** (for keyless DWD).
+Full rationale: [setup_instructions.md → Required Privileges](setup_instructions.md#required-privileges).
 
-**Google Workspace**: a **Super Admin** to register the Domain-Wide Delegation entry, plus a
-real, active, licensed delegated-admin user for the service to impersonate (with Directory
-read and license-management privileges — Super Admin covers these).
+---
 
-Full breakdown with per-role rationale: [setup_instructions.md → Required Privileges](setup_instructions.md#required-privileges).
+## Security model
 
-### Security model
+Optional, two layers, enabled together:
 
-Optional two-layer access control: **Identity-Aware Proxy** authenticates the browser,
-then the **app verifies the IAP assertion and requires the user to be a Google Workspace
-super administrator** (Directory `isAdmin`), returning `403` otherwise. The Cloud
-Scheduler service account is allowed through `POST /api/sync/run` only.
+1. **Identity‑Aware Proxy** authenticates every request (Google SSO for browsers, OIDC
+   for the scheduler) and forwards a signed assertion.
+2. **The app** verifies that assertion and requires the user to be an active Google
+   Workspace **super administrator** (`isAdmin`); everyone else gets `403`. The Cloud
+   Scheduler service account is allowed through `POST /api/sync/run` only.
 
-Enforcement turns on when `IAP_AUDIENCE` is set (`enable_iap = true` in Terraform).
-**Until then the UI and every `/api/*` endpoint are public** (`--allow-unauthenticated`
-+ `allUsers` invoker) — fine only for a first smoke test. Full setup:
+Enforcement turns on when `IAP_AUDIENCE` is set. **Until then the UI and all `/api/*`
+endpoints are public** (`--allow-unauthenticated` + `allUsers` invoker) — acceptable
+only for an initial smoke test. Setup and hardening notes:
 [setup_instructions.md → Security Model](setup_instructions.md#security-model).
+
+---
+
+## Operations
+
+- **Run history**: the **Run History** page (and `sync_history` in Firestore) has every
+  run with status, counts, timing, and per‑item errors.
+- **Failures don't stop the service.** A run that hits errors is recorded as `FAILED` or
+  `PARTIAL_SUCCESS`; the next scheduled run proceeds normally. Common causes: no seats
+  left on the SKU (`HTTP 412`), a nested group, a suspended user.
+- **Notifications** (optional): configure recipients on the **Sync Schedule** page and
+  choose "all runs" or "failures only". Requires the `gmail.send` DWD scope.
+- **Change the schedule**: the **Sync Schedule** page updates both Firestore and the
+  Cloud Scheduler job.
+- **Rotate the delegated admin**: update it on the **Settings** page (or the
+  `DELEGATED_ADMIN_EMAIL` variable) — it must remain a real, active, licensed admin.
+- **Logs**: `gcloud run services logs read <service> --region <region>`; app loggers are
+  namespaced `gemini_provisioner.*`.
+
+---
+
+## Testing
+
+`pytest tests/` covers the sync engine (dedupe, nested‑group handling), the API
+endpoints and views, the notification builder/dispatch, and the auth gate
+(IAP verification, super‑admin lookup + caching + fail‑closed, break‑glass).
+`scripts/test_local.py` runs the sync engine with all cloud dependencies mocked.
+
+---
+
+## Status
+
+Internal tooling shared as‑is. No formal support or SLA. Review
+[setup_instructions.md → Security Model](setup_instructions.md#security-model) before any
+non‑trivial use, and treat the runtime service account as highly privileged.

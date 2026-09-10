@@ -244,6 +244,12 @@ workflow reads these so nothing environment-specific is committed:
 | `CLOUD_SCHEDULER_JOB` | `${SCHEDULER_JOB}` | `gemini-license-sync-job` |
 | `DELEGATED_ADMIN_EMAIL` | `${DELEGATED_ADMIN_EMAIL}` | *(unset — set it on the Settings page instead)* |
 
+The workflow also forwards these optional variables when set:
+`NOTIFICATION_SENDER_EMAIL`, `PUBLIC_BASE_URL` (Step 8) and `IAP_AUDIENCE`,
+`SYNC_INVOKER_SA_EMAIL`, `AUTH_BOOTSTRAP_ADMINS`, `SUPER_ADMIN_CACHE_TTL`,
+`CLOUD_RUN_ENABLE_IAP`, `CLOUD_RUN_ALLOW_UNAUTH` (Security Model). Full list and meanings:
+[README → Configuration reference](README.md#configuration-reference).
+
 ---
 
 ## Step 6: Push Code to Trigger Deployment
@@ -322,7 +328,7 @@ smoke test. Turn it on:
 
 ```hcl
 enable_iap          = true
-iap_audience        = "/projects/<PROJECT_NUMBER>/global/backendServices/<BACKEND_ID>"
+iap_audience        = "<the IAP JWT aud - see step 4 below>"
 iap_oauth_client_id = "<client-id>.apps.googleusercontent.com"   # for scheduled runs
 # iap_members       = ["group:workspace-admins@your-domain.com"] # optional; default is the whole domain
 ```
@@ -331,27 +337,44 @@ iap_oauth_client_id = "<client-id>.apps.googleusercontent.com"   # for scheduled
 grants the IAP service agent `run.invoker`, grants `iap.httpsResourceAccessor` to
 `iap_members` and the scheduler SA, sets `IAP_AUDIENCE` / `SYNC_INVOKER_SA_EMAIL`, and
 points the scheduler's OIDC token at the IAP client. You still create the OAuth consent
-screen (brand) once in the console if the project has none.
+screen (brand) once in the console if the project has none, and you still need the
+audience from step 4.
 
 ### By hand (console + gcloud + CI)
 
-1. **OAuth consent screen**: APIs & Services → OAuth consent screen → Internal (once per project).
-2. **Enable IAP on the service**: Security → Identity-Aware Proxy → toggle on the Cloud
-   Run service (or `gcloud beta run services update ${SERVICE_NAME} --region ${REGION} --iap`).
-3. **Grant access through IAP**: on that IAP resource, add
-   `roles/iap.httpsResourceAccessor` to `domain:${WORKSPACE_DOMAIN}` (or an admins group)
-   **and** to the scheduler SA `serviceAccount:<scheduler-sa>`.
-4. **Find the audience**: IAP console → the service → "Signed Header JWT" / or
-   `gcloud iap web get-iam-policy` docs; it looks like
-   `/projects/<PROJECT_NUMBER>/global/backendServices/<ID>`.
+1. **OAuth consent screen**: APIs & Services → OAuth consent screen → Internal (once per
+   project). Most Workspace orgs already have one.
+2. **Enable IAP on the service**: Cloud Run → the service → **Security** → toggle
+   **Identity-Aware Proxy** on (accept the prompt to grant the IAP service agent the
+   invoker role). Equivalent CLI: `gcloud run deploy ${SERVICE_NAME} --iap ...` (needs a
+   recent gcloud) or set repository variable `CLOUD_RUN_ENABLE_IAP=true` and redeploy.
+3. **Grant access through IAP**:
+   ```bash
+   gcloud iap web add-iam-policy-binding --resource-type=cloud-run \
+     --service=${SERVICE_NAME} --region=${REGION} --project=${PROJECT_ID} \
+     --member="domain:${WORKSPACE_DOMAIN}" --role="roles/iap.httpsResourceAccessor"
+   gcloud iap web add-iam-policy-binding --resource-type=cloud-run \
+     --service=${SERVICE_NAME} --region=${REGION} --project=${PROJECT_ID} \
+     --member="serviceAccount:<scheduler-sa>" --role="roles/iap.httpsResourceAccessor"
+   ```
+   Use a `group:` instead of `domain:` to narrow it — the app still enforces super-admin
+   on top.
+4. **Find the IAP JWT audience** (the value for `IAP_AUDIENCE`). For a Cloud Run service
+   with IAP enabled directly there is no load-balancer backend service, so use one of:
+   - **IAP console** → the resource → ⋮ → *Get JWT audience code*, or
+   - deploy this app, open it in a browser as an allowed user, then
+     `gcloud run services logs read ${SERVICE_NAME} --region ${REGION} | grep "IAP assertion received"`
+     — it logs the exact `aud` it observed.
 5. **Add repository variables** so CI keeps it on:
    | Variable | Value |
    | :--- | :--- |
+   | `CLOUD_RUN_ENABLE_IAP` | `true` |
    | `IAP_AUDIENCE` | the audience from step 4 |
    | `SYNC_INVOKER_SA_EMAIL` | the Cloud Scheduler service account email |
+   | `AUTH_BOOTSTRAP_ADMINS` | your own admin email (break-glass, recommended) |
    | `CLOUD_RUN_ALLOW_UNAUTH` | `false` |
 6. **Repoint the scheduler** OIDC token audience to the IAP OAuth client ID
-   (`gcloud scheduler jobs update http ${SCHEDULER_JOB} --oidc-token-audience=<client-id>.apps.googleusercontent.com --oidc-service-account-email=<scheduler-sa>`).
+   (`gcloud scheduler jobs update http ${SCHEDULER_JOB} --location=${REGION} --oidc-token-audience=<client-id>.apps.googleusercontent.com --oidc-service-account-email=<scheduler-sa>`).
 7. Redeploy (push to `main`).
 
 ### Optional knobs

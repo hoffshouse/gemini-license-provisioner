@@ -360,7 +360,9 @@ audience from step 4.
    Use a `group:` instead of `domain:` to narrow it — the app still enforces super-admin
    on top.
 4. **Find the IAP JWT audience** (the value for `IAP_AUDIENCE`). For a Cloud Run service
-   with IAP enabled directly there is no load-balancer backend service, so use one of:
+   with IAP enabled directly there is no load-balancer backend service; the `aud` has the
+   form `/projects/<PROJECT_NUMBER>/locations/<REGION>/services/<SERVICE_NAME>`. Confirm
+   the exact string with one of:
    - **IAP console** → the resource → ⋮ → *Get JWT audience code*, or
    - deploy this app, open it in a browser as an allowed user, then
      `gcloud run services logs read ${SERVICE_NAME} --region ${REGION} | grep "IAP assertion received"`

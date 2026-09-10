@@ -73,7 +73,7 @@ Terraform:
 
 ```hcl
 enable_iap          = true
-iap_audience        = "<from the IAP console or the app logs after enabling IAP>"
+iap_audience        = "/projects/750123456789/locations/us-central1/services/gemini-license-provisioner"
 iap_oauth_client_id = "750123456789-abc123def456.apps.googleusercontent.com"
 # iap_members defaults to ["domain:acme.example"]
 ```

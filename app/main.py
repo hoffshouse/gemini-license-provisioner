@@ -69,11 +69,6 @@ async def capture_base_url(request: Request, call_next):
     _assertion = request.headers.get(settings.IAP_JWT_HEADER)
     if _assertion:
         auth._log_observed_audience(_assertion)
-    elif not getattr(app.state, "_logged_goog_headers", False):
-        _goog = sorted(k for k in request.headers.keys() if k.lower().startswith("x-goog"))
-        if _goog:
-            app.state._logged_goog_headers = True
-            logger.warning("IAP diagnostics: x-goog-* request header names = %s", _goog)
     try:
         if not settings.PUBLIC_BASE_URL and request.method == "GET" and \
                 not request.url.path.startswith(("/static", "/healthz", "/api")):

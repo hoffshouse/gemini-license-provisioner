@@ -69,7 +69,6 @@ def _log_observed_audience(assertion: str) -> None:
 
 
 def _verify_iap_assertion(assertion: str) -> Dict:
-    _log_observed_audience(assertion)
     try:
         payload = id_token.verify_token(
             assertion,

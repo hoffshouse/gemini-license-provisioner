@@ -52,9 +52,10 @@ Domain-wide delegation → Add new:
 | Field | Value |
 | :--- | :--- |
 | Client ID | `109876543210987654321` (the service account's numeric `uniqueId`) |
-| OAuth scopes | `https://www.googleapis.com/auth/admin.directory.group.readonly,https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/apps.licensing,https://www.googleapis.com/auth/gmail.send` |
+| OAuth scopes | `https://www.googleapis.com/auth/admin.directory.group.readonly,https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/gmail.send` |
 
-`gmail.send` is only needed for run-notification emails.
+`gmail.send` is only needed for run-notification emails. Gemini Enterprise licensing
+does not use DWD.
 
 Delegated admin impersonated at runtime: `ws-provisioner@acme.example`.
 
@@ -63,9 +64,11 @@ Delegated admin impersonated at runtime: `ws-provisioner@acme.example`.
 - Cloud Run service: `https://gemini-license-provisioner-abcde12345-uc.a.run.app`
 - Settings / Test Connection: `…/settings`
 - Runtime + CI/CD service account `sa-gemini-provisioner@acme-licensing-prod.iam.gserviceaccount.com`
-  with `datastore.user`, `cloudscheduler.admin`, `logging.logWriter`, `run.admin`,
-  `artifactregistry.admin`, `iam.serviceAccountUser`, and `iam.serviceAccountTokenCreator`
-  on itself.
+  with `datastore.user`, `discoveryengine.admin`, `cloudscheduler.admin`,
+  `logging.logWriter`, `run.admin`, `artifactregistry.admin`, `iam.serviceAccountUser`,
+  and `iam.serviceAccountTokenCreator` on itself.
+- On the **Settings** page, pick the Gemini Enterprise license subscription
+  (e.g. `free_trial_gemini`) from the dropdown and Save.
 
 ## Locking it down (IAP + super-admin)
 

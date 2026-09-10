@@ -16,8 +16,8 @@ filled in.
 
 - On a schedule (Cloud Scheduler cron) or on demand, reads the **direct members** of a
   configured set of Google Groups.
-- Deduplicates users, then for each one checks the target product/SKU and **assigns the
-  license if it is missing**.
+- Deduplicates users, then **skips anyone who already holds a license** from the
+  selected subscription and **assigns it to the rest** (one additive batch call).
 - Records every run — counts, per‑item errors, timing — to Firestore and, optionally,
   emails a full report.
 
@@ -27,7 +27,7 @@ filled in.
 - **No nested‑group expansion.** A group that contains another group is skipped and
   flagged as an error in the run history (`Nested groups are not supported for licensing`).
 - **No user creation / directory changes.** It only reads the directory and manages
-  license SKUs.
+  Gemini Enterprise licenses via the Discovery Engine API.
 
 ---
 
@@ -49,7 +49,8 @@ filled in.
    │  Admin UI                     Sync engine               │
    │  • Dashboard / history        • Read direct members     │
    │  • Group selection            • Dedupe users            │
-   │  • Schedule + notifications   • Check & assign SKU       │
+   │  • Schedule + notifications   • Skip already-licensed    │
+   │  • License subscription       • Batch-assign the rest    │
    │  • DWD connectivity test      • Flag nested groups       │
    │  • Super-admin auth check     • Record run + notify      │
    └───────┬──────────────────┬───────────────────┬──────────┘
@@ -58,7 +59,8 @@ filled in.
    │  Firestore   │   │ Workspace APIs  │  │  Gmail API           │
    │ • config     │   │ • Admin SDK     │  │  (run-report email,  │
    │ • sync_hist. │   │   Directory     │  │   optional)          │
-   └──────────────┘   │ • Licensing     │  └──────────────────────┘
+   └──────────────┘   │ Discovery Engine│  └──────────────────────┘
+                      │ • license mgmt  │
                       └─────────────────┘
    Build/deploy: GitHub Actions → Workload Identity Federation → Artifact Registry → Cloud Run
 ```
@@ -68,7 +70,8 @@ filled in.
 | **Cloud Run** (`app/`) | Single FastAPI container: admin UI + `POST /api/sync/run` worker endpoint |
 | **Cloud Scheduler** | Fires `POST /api/sync/run` on a cron schedule with an OIDC token |
 | **Firestore** (Native mode) | `config/gemini_provisioner` (settings) and `sync_history/*` (run logs) |
-| **Domain‑Wide Delegation** | The runtime service account impersonates a Workspace admin — **keyless**, via the IAM Credentials API — to call the Admin SDK Directory, Enterprise License Manager, and (optionally) Gmail APIs |
+| **Domain‑Wide Delegation** | The runtime service account impersonates a Workspace admin — **keyless**, via the IAM Credentials API — to read groups/members (Admin SDK Directory) and, optionally, send report email (Gmail) |
+| **Gemini Enterprise licensing** | The runtime service account calls the **Discovery Engine API** directly (no DWD) to list license subscriptions and check/assign user licenses |
 | **Identity‑Aware Proxy** (optional) | Authenticates access; the app additionally requires the user to be a Workspace **super admin** |
 | **GitHub Actions + WIF** | Builds the image and deploys to Cloud Run with no long‑lived keys |
 | **Terraform** (`terraform/`) | Reference infrastructure‑as‑code for the same resources; the CI pipeline deploys with `gcloud`, so Terraform is optional |
@@ -82,14 +85,15 @@ filled in.
 │   ├── main.py               # FastAPI app: routes, middleware, template wiring
 │   ├── config.py             # Settings (env-var backed) + AUTH_ENABLED
 │   ├── auth.py               # IAP JWT verification + Workspace super-admin check
-│   ├── workspace_client.py   # DWD credentials + Directory / Licensing / Gmail clients
+│   ├── workspace_client.py   # DWD credentials + Directory / Gmail clients
+│   ├── gemini_licensing.py   # Gemini Enterprise license configs + user licenses (Discovery Engine)
 │   ├── sync_worker.py        # Core sync engine
 │   ├── notifications.py      # Post-run email report (Gmail API)
 │   ├── firestore_db.py       # Config + run-history persistence
 │   ├── scheduler_service.py  # Reads/updates the Cloud Scheduler job from the UI
 │   ├── templates/*.html      # Server-rendered Jinja2 views (Tailwind via CDN)
 │   └── static/css/custom.css
-├── tests/                    # pytest: test_api, test_auth, test_notifications, test_sync
+├── tests/                    # pytest: test_api, test_auth, test_gemini_licensing, test_notifications, test_sync
 ├── scripts/
 │   ├── setup_wif.sh          # One-time Workload Identity Federation bootstrap
 │   └── test_local.py         # Dependency-free smoke test of the sync engine
@@ -114,7 +118,7 @@ filled in.
 | `pydantic`, `pydantic-settings` | Typed settings from environment variables |
 | `google-cloud-firestore` | Config + run history |
 | `google-cloud-scheduler` | Read/update the schedule from the UI |
-| `google-api-python-client` | Admin SDK Directory, Enterprise License Manager, Gmail |
+| `google-api-python-client` | Admin SDK Directory, Gmail |
 | `google-auth`, `google-auth-oauthlib`, `google-auth-httplib2` | Auth: keyless DWD (IAM Credentials signer), IAP JWT verification |
 | `requests` | Transitive HTTP needs |
 | `pytest`, `httpx` | Test suite only (kept here for convenience) |
@@ -125,8 +129,8 @@ Node/npm build.
 ### Google Cloud APIs (enabled during setup)
 
 `run`, `cloudscheduler`, `firestore`, `artifactregistry`, `cloudbuild`, `iam`,
-`iamcredentials`, `admin` (Admin SDK), `licensing` (Enterprise License Manager). IAP
-(`iap`) and Gmail (`gmail`) only if you use those features.
+`iamcredentials`, `admin` (Admin SDK Directory), `discoveryengine` (Gemini Enterprise
+license management). IAP (`iap`) and Gmail (`gmail`) only if you use those features.
 
 ### Google Cloud resources
 
@@ -140,7 +144,8 @@ for GitHub Actions. All created by `setup_instructions.md` (or `terraform/`).
 - A Cloud Identity / Workspace tenant on your domain.
 - A **super administrator** to register Domain‑Wide Delegation once.
 - A real, active, licensed **delegated‑admin user** the service impersonates at runtime.
-- Assignable **Gemini Enterprise** SKU seats.
+- A **Gemini Enterprise** subscription in the GCP project (Gemini Enterprise console →
+  *Manage subscriptions*) with free seats.
 
 ### CI/CD
 
@@ -162,7 +167,7 @@ from the admin UI, which persists them to Firestore.
 | `GCP_REGION` | no | `us-central1` | Region for the Scheduler client |
 | `RUNTIME_SERVICE_ACCOUNT_EMAIL` | yes (on Cloud Run) | — | The attached service account; needed for keyless DWD |
 | `DELEGATED_ADMIN_EMAIL` | yes | placeholder | Workspace admin the service impersonates (also editable on the Settings page) |
-| `PRODUCT_ID` / `SKU_ID` | no | `Google-Apps` / `101031` | License product/SKU to assign (editable on the Settings page) |
+| `LICENSE_CONFIG` | no | unset | Optional headless default for the Gemini Enterprise subscription (a Discovery Engine license config resource name); normally chosen on the Settings page |
 | `CLOUD_SCHEDULER_JOB_NAME` | no | `gemini-license-sync-job` | Job the UI reads/updates |
 | `IAP_AUDIENCE` | no | unset | **Turns on** IAP + super-admin enforcement; the IAP JWT `aud` to verify |
 | `SYNC_INVOKER_SA_EMAIL` | no | unset | Scheduler SA allowed through `POST /api/sync/run` when enforcement is on |
@@ -218,9 +223,9 @@ deploys automatically.
   `datastore.owner` + `iam.serviceAccountAdmin` + `resourcemanager.projectIamAdmin` +
   `run.admin` + `artifactregistry.admin` + `cloudscheduler.admin` +
   `iam.workloadIdentityPoolAdmin`.
-- **Runtime/CI service account**: `datastore.user`, `cloudscheduler.admin`,
-  `logging.logWriter`, `run.admin`, `artifactregistry.admin`, `iam.serviceAccountUser`,
-  and `iam.serviceAccountTokenCreator` **on itself** (keyless DWD).
+- **Runtime/CI service account**: `datastore.user`, `discoveryengine.admin`,
+  `cloudscheduler.admin`, `logging.logWriter`, `run.admin`, `artifactregistry.admin`,
+  `iam.serviceAccountUser`, and `iam.serviceAccountTokenCreator` **on itself** (keyless DWD).
 - **Workspace**: a super admin to register DWD once, plus the delegated‑admin user.
 
 Full rationale: [setup_instructions.md → Required Privileges](setup_instructions.md#required-privileges).
@@ -250,7 +255,7 @@ only for an initial smoke test. Setup and hardening notes:
   run with status, counts, timing, and per‑item errors.
 - **Failures don't stop the service.** A run that hits errors is recorded as `FAILED` or
   `PARTIAL_SUCCESS`; the next scheduled run proceeds normally. Common causes: no seats
-  left on the SKU (`HTTP 412`), a nested group, a suspended user.
+  left on the subscription, a nested group, a suspended user.
 - **Notifications** (optional): configure recipients on the **Sync Schedule** page and
   choose "all runs" or "failures only". Requires the `gmail.send` DWD scope.
 - **Change the schedule**: the **Sync Schedule** page updates both Firestore and the

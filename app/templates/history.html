@@ -109,8 +109,7 @@
 
         <div class="space-y-3 text-xs">
             <div class="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg font-mono">
-                <div><span class="text-slate-500">Product ID:</span> <span id="modal-product" class="font-bold"></span></div>
-                <div><span class="text-slate-500">SKU ID:</span> <span id="modal-sku" class="font-bold"></span></div>
+                <div class="col-span-2 break-all"><span class="text-slate-500">Subscription:</span> <span id="modal-license" class="font-bold"></span></div>
                 <div><span class="text-slate-500">Status:</span> <span id="modal-status" class="font-bold"></span></div>
                 <div><span class="text-slate-500">Duration:</span> <span id="modal-duration"></span></div>
             </div>
@@ -144,8 +143,7 @@
         if (!run) return;
 
         document.getElementById('modal-title').innerText = `Run Record: ${run.started_at ? run.started_at.slice(0, 19) : 'N/A'}`;
-        document.getElementById('modal-product').innerText = run.product_id || '—';
-        document.getElementById('modal-sku').innerText = run.sku_id || '—';
+        document.getElementById('modal-license').innerText = run.license_label || run.license_config || '—';
         document.getElementById('modal-status').innerText = run.status || '—';
         document.getElementById('modal-duration').innerText = `${run.duration_seconds || 0}s`;
 

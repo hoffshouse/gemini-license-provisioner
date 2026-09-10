@@ -16,12 +16,11 @@ class Settings(BaseSettings):
     # not resolve fails with "invalid_grant: Invalid email or User ID".
     DELEGATED_ADMIN_EMAIL: str = os.getenv("DELEGATED_ADMIN_EMAIL", "workspace-admin@your-domain.com")
     
-    # Default Product and SKU IDs
-    # Product: Google-Apps or 101047
-    # SKU: 101031 (Standard / specified) or 1010470001 (Gemini Enterprise)
-    PRODUCT_ID: str = os.getenv("PRODUCT_ID", "Google-Apps")
-    SKU_ID: str = os.getenv("SKU_ID", "101031")
-    
+    # The Gemini Enterprise license subscription to assign from is chosen on the
+    # Settings page (a Discovery Engine license config resource name) and stored in
+    # Firestore. An optional env override for headless/initial deploys:
+    LICENSE_CONFIG: Optional[str] = os.getenv("LICENSE_CONFIG", None)
+
     # Firestore Configuration
     FIRESTORE_DATABASE: str = os.getenv("FIRESTORE_DATABASE", "(default)")
     CONFIG_COLLECTION: str = "config"

@@ -87,16 +87,10 @@ variable "public_base_url" {
   default     = ""
 }
 
-variable "product_id" {
-  description = "Google Workspace Product ID for license assignment (e.g. Google-Apps or 101047)."
+variable "license_config" {
+  description = "Optional headless default for the Gemini Enterprise license subscription: a Discovery Engine license config resource name (projects/<NUMBER>/locations/<LOC>/licenseConfigs/<ID>). Normally left empty and chosen on the Settings page."
   type        = string
-  default     = "Google-Apps"
-}
-
-variable "sku_id" {
-  description = "Google Workspace SKU ID for Gemini Enterprise (e.g. 101031 or 1010470001)."
-  type        = string
-  default     = "101031"
+  default     = ""
 }
 
 variable "initial_cron_expression" {

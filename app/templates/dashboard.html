@@ -36,12 +36,12 @@
             </div>
         </div>
 
-        <!-- Target Product & SKU -->
+        <!-- Target License Subscription -->
         <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
             <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Target License SKU</p>
-                <p class="text-lg font-bold text-slate-900 mt-1 truncate" title="{{ config.sku_id }}">{{ config.sku_id }}</p>
-                <p class="text-xs text-slate-500 mt-1 truncate">Product: {{ config.product_id }}</p>
+                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">License Subscription</p>
+                <p class="text-lg font-bold text-slate-900 mt-1 truncate" title="{{ config.license_config }}">{{ config.license_label or config.license_config or "Not selected" }}</p>
+                <p class="text-xs text-slate-500 mt-1 truncate">{{ config.license_config or "Set one on the Settings page" }}</p>
             </div>
             <div class="w-12 h-12 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl">
                 <i class="fa-solid fa-id-badge"></i>

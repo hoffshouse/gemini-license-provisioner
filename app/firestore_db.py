@@ -29,8 +29,10 @@ def get_config() -> Dict[str, Any]:
     """Retrieve application configuration from Firestore, returning defaults if not yet created."""
     default_config: Dict[str, Any] = {
         "monitored_groups": [],
-        "product_id": settings.PRODUCT_ID,
-        "sku_id": settings.SKU_ID,
+        # Selected Gemini Enterprise license subscription (Discovery Engine
+        # license config resource name) + a human label for display.
+        "license_config": settings.LICENSE_CONFIG or "",
+        "license_label": "",
         "delegated_admin_email": settings.DELEGATED_ADMIN_EMAIL,
         "cron_expression": "0 2 * * *",
         # Run notifications

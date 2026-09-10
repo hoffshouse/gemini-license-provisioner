@@ -8,9 +8,9 @@ region     = "us-central1"
 # Must be a real, active, licensed admin user in your Workspace tenant.
 delegated_admin_email = "workspace-admin@your-domain.com"
 
-# License targeting (Google-Apps / 101031, or 101047 / 1010470001)
-product_id = "Google-Apps"
-sku_id     = "101031"
+# Gemini Enterprise license subscription — normally chosen on the Settings page.
+# Optional headless default (a Discovery Engine license config resource name):
+# license_config = "projects/123456789/locations/us/licenseConfigs/free_trial_gemini"
 
 # ── Cloud Scheduler ─────────────────────────────────────────────────────────
 initial_cron_expression = "0 2 * * *"   # UTC

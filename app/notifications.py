@@ -75,12 +75,14 @@ def build_message(config: Dict[str, Any], run_record: Dict[str, Any]) -> Dict[st
     )
 
     # ---- plain text ----
+    subscription = run_record.get("license_label") or run_record.get("license_config") or "n/a"
     lines = [
         f"Gemini Enterprise license sync: {status}",
         "",
-        f"When:      started {started}, completed {completed} ({duration}s)",
-        f"Why:       {why}",
-        f"Groups:    {run_record.get('monitored_groups_count', len(groups))} monitored",
+        f"When:         started {started}, completed {completed} ({duration}s)",
+        f"Why:          {why}",
+        f"Subscription: {subscription}",
+        f"Groups:       {run_record.get('monitored_groups_count', len(groups))} monitored",
     ]
     for g in groups:
         lines.append(f"             - {g}")
@@ -146,6 +148,8 @@ def build_message(config: Dict[str, Any], run_record: Dict[str, Any]) -> Dict[st
         <td style="padding:4px 0">started {esc(started)}<br>completed {esc(completed)} ({esc(duration)}s)</td></tr>
     <tr><td style="padding:4px 12px 4px 0;color:#64748b">Why</td>
         <td style="padding:4px 0">{esc(why)}</td></tr>
+    <tr><td style="padding:4px 12px 4px 0;color:#64748b">Subscription</td>
+        <td style="padding:4px 0">{esc(subscription)}</td></tr>
   </table>
   <h3 style="margin:16px 0 4px">Monitored groups</h3>
   <ul style="margin:0;padding-left:18px">{groups_html}</ul>

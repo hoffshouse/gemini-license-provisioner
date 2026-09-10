@@ -6,76 +6,88 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from app.sync_worker import run_license_sync
 
+_CFG = "projects/750/locations/us/licenseConfigs/gemini_ent"
 
-def test_sync_engine_handles_nested_group_failure():
-    """Test that nested groups are logged as explicit errors and not recursed/assigned licenses."""
-    mock_config = {
+
+def _config(**over):
+    base = {
         "monitored_groups": ["ai-team@example.com"],
-        "product_id": "Google-Apps",
-        "sku_id": "101031",
-        "delegated_admin_email": "admin@example.com"
+        "license_config": _CFG,
+        "license_label": "Gemini Enterprise — us",
+        "delegated_admin_email": "admin@example.com",
     }
+    base.update(over)
+    return base
 
-    # Mock direct members of ai-team@example.com:
-    # 1 valid user needing license
-    # 1 valid user already licensed
-    # 1 nested group (which must be flagged as unsupported and skipped)
-    mock_members = [
+
+def _run(config, members=None, already_licensed=None, batch_result=None):
+    ws = MagicMock()
+    ws.list_direct_group_members.return_value = members or []
+    gem = MagicMock()
+    gem.assigned_user_emails.return_value = set(already_licensed or [])
+    gem.batch_assign.return_value = batch_result or {"assigned": 0, "failed": 0, "errors": [], "operation": None}
+    with patch("app.sync_worker.get_config", return_value=config), \
+         patch("app.sync_worker.record_sync_history", return_value="doc1"), \
+         patch("app.sync_worker.send_sync_notification", return_value={"sent": False}), \
+         patch("app.sync_worker.WorkspaceClient", return_value=ws), \
+         patch("app.sync_worker.GeminiLicenseClient", return_value=gem):
+        return run_license_sync(triggered_by="test"), ws, gem
+
+
+def test_skips_users_who_already_have_a_license():
+    members = [
         {"email": "alice@example.com", "type": "USER"},
         {"email": "bob@example.com", "type": "USER"},
-        {"email": "subteam-nested@example.com", "type": "GROUP"},
+        {"email": "subteam@example.com", "type": "GROUP"},
     ]
-
-    with patch("app.sync_worker.get_config", return_value=mock_config), \
-         patch("app.sync_worker.record_sync_history", return_value="mock_doc_id"), \
-         patch("app.sync_worker.WorkspaceClient") as MockClientClass:
-        
-        mock_client = MagicMock()
-        MockClientClass.return_value = mock_client
-        mock_client.list_direct_group_members.return_value = mock_members
-
-        # Alice lacks license (False), Bob already has license (True)
-        def mock_check_license(prod, sku, user):
-            if user == "alice@example.com":
-                return False
-            return True
-        mock_client.check_license.side_effect = mock_check_license
-        mock_client.assign_license.return_value = (True, None)
-
-        # Run sync
-        result = run_license_sync(triggered_by="test")
-
-        # Assertions
-        assert result["status"] == "PARTIAL_SUCCESS"  # because there was 1 nested group error
-        assert result["evaluated_users_count"] == 2   # Alice and Bob
-        assert result["licenses_assigned_count"] == 1  # Alice
-        assert result["licenses_already_held_count"] == 1  # Bob
-        assert result["nested_groups_count"] == 1     # subteam-nested@example.com
-
-        # Verify nested group error was logged in errors array
-        nested_errors = [e for e in result["errors"] if e["type"] == "NESTED_GROUP_UNSUPPORTED"]
-        assert len(nested_errors) == 1
-        assert "subteam-nested@example.com" in nested_errors[0]["item"]
-        assert "Nested groups are not supported" in nested_errors[0]["error"]
-
-        # Verify assign_license was called ONLY for Alice, never for the nested group
-        mock_client.assign_license.assert_called_once_with("Google-Apps", "101031", "alice@example.com")
+    result, ws, gem = _run(
+        _config(), members=members,
+        already_licensed=["bob@example.com"],
+        batch_result={"assigned": 1, "failed": 0, "errors": [], "operation": "op/1"},
+    )
+    assert result["status"] == "PARTIAL_SUCCESS"          # 1 nested-group error
+    assert result["evaluated_users_count"] == 2
+    assert result["licenses_already_held_count"] == 1     # bob, skipped
+    assert result["licenses_assigned_count"] == 1         # alice
+    assert result["nested_groups_count"] == 1
+    # only the not-yet-licensed user is sent to batch_assign
+    gem.batch_assign.assert_called_once_with(_CFG, ["alice@example.com"])
 
 
-def test_sync_engine_empty_groups():
-    """Test sync engine behavior when no monitored groups are configured."""
-    mock_config = {
-        "monitored_groups": [],
-        "product_id": "Google-Apps",
-        "sku_id": "101031",
-        "delegated_admin_email": "admin@example.com"
-    }
+def test_no_assign_call_when_everyone_is_already_licensed():
+    members = [{"email": "alice@example.com", "type": "USER"}]
+    result, ws, gem = _run(_config(), members=members, already_licensed=["alice@example.com"])
+    assert result["status"] == "SUCCESS"
+    assert result["licenses_already_held_count"] == 1
+    assert result["licenses_assigned_count"] == 0
+    gem.batch_assign.assert_not_called()
 
-    with patch("app.sync_worker.get_config", return_value=mock_config), \
-         patch("app.sync_worker.record_sync_history", return_value="mock_doc_id"):
-        
-        result = run_license_sync(triggered_by="scheduled")
-        assert result["status"] == "SUCCESS"
-        assert result["evaluated_users_count"] == 0
-        assert result["licenses_assigned_count"] == 0
-        assert "No groups configured" in result["message"]
+
+def test_rejects_workspace_product_sku_as_license_config():
+    result, ws, gem = _run(_config(license_config="Google-Apps"))
+    assert result["status"] == "FAILED"
+    assert result["errors"][0]["type"] == "INVALID_LICENSE_CONFIG"
+    gem.assigned_user_emails.assert_not_called()
+
+
+def test_fails_when_no_subscription_selected():
+    result, ws, gem = _run(_config(license_config="", license_label=""))
+    assert result["status"] == "FAILED"
+    assert result["errors"][0]["type"] == "NO_LICENSE_CONFIG"
+
+
+def test_empty_groups_is_success():
+    result, ws, gem = _run(_config(monitored_groups=[]))
+    assert result["status"] == "SUCCESS"
+    assert result["evaluated_users_count"] == 0
+    assert "No groups configured" in result["message"]
+
+
+def test_batch_assign_failure_is_recorded():
+    members = [{"email": "alice@example.com", "type": "USER"}]
+    result, ws, gem = _run(
+        _config(), members=members, already_licensed=[],
+        batch_result={"assigned": 0, "failed": 1, "errors": ["quota exceeded"], "operation": "op/2"},
+    )
+    assert result["status"] == "FAILED"
+    assert any(e["type"] == "LICENSE_ASSIGN_FAILED" and "quota" in e["error"] for e in result["errors"])

@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 import google.auth
 from google.auth import iam
@@ -16,7 +16,6 @@ logger = logging.getLogger("gemini_provisioner.workspace")
 SCOPES = [
     "https://www.googleapis.com/auth/admin.directory.group.readonly",
     "https://www.googleapis.com/auth/admin.directory.user.readonly",
-    "https://www.googleapis.com/auth/apps.licensing",
 ]
 
 # Requested only when sending run notifications. Must be added to the service
@@ -127,11 +126,6 @@ class WorkspaceClient:
         """Construct Google Workspace Admin SDK Directory API client."""
         creds = self.get_credentials(subject_email)
         return build("admin", "directory_v1", credentials=creds, cache_discovery=False)
-
-    def get_licensing_service(self, subject_email: Optional[str] = None):
-        """Construct Google Workspace Enterprise License Manager API client."""
-        creds = self.get_credentials(subject_email)
-        return build("licensing", "v1", credentials=creds, cache_discovery=False)
 
     def get_gmail_service(self, subject_email: Optional[str] = None):
         """Construct a Gmail API client that sends mail as the impersonated user.
@@ -253,62 +247,3 @@ class WorkspaceClient:
                 break
 
         return members
-
-    def check_license(
-        self,
-        product_id: str,
-        sku_id: str,
-        user_email: str,
-        subject_email: Optional[str] = None
-    ) -> bool:
-        """Check if a user already holds the specified license SKU.
-        
-        Returns:
-            True if the user has the license (HTTP 200).
-            False if the user does not have the license (HTTP 404).
-        """
-        service = self.get_licensing_service(subject_email)
-        try:
-            assignment = service.licenseAssignments().get(
-                productId=product_id,
-                skuId=sku_id,
-                userId=user_email
-            ).execute()
-            return bool(assignment)
-        except HttpError as err:
-            if err.resp.status == 404:
-                return False
-            logger.error("Error checking license for %s (Product: %s, SKU: %s): %s", user_email, product_id, sku_id, err)
-            raise
-
-    def assign_license(
-        self,
-        product_id: str,
-        sku_id: str,
-        user_email: str,
-        subject_email: Optional[str] = None
-    ) -> Tuple[bool, Optional[str]]:
-        """Assign the specified product SKU license to a user.
-        
-        Returns:
-            (True, None) on success.
-            (False, error_message) on failure.
-        """
-        service = self.get_licensing_service(subject_email)
-        try:
-            body = {"userId": user_email}
-            service.licenseAssignments().insert(
-                productId=product_id,
-                skuId=sku_id,
-                body=body
-            ).execute()
-            logger.info("Successfully assigned license %s/%s to %s", product_id, sku_id, user_email)
-            return True, None
-        except HttpError as err:
-            msg = f"HTTP {err.resp.status}: {err.reason}"
-            logger.error("Failed to assign license to %s: %s", user_email, msg)
-            return False, msg
-        except Exception as ex:
-            msg = str(ex)
-            logger.error("Unexpected error assigning license to %s: %s", user_email, msg)
-            return False, msg

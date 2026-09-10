@@ -16,7 +16,7 @@ def test_iap_enforced_blocks_unauthenticated(monkeypatch):
     monkeypatch.setattr(settings, "IAP_AUDIENCE", "test-aud")
     assert client.get("/").status_code == 401
     assert client.post("/api/settings", json={
-        "delegated_admin_email": "a@b.com", "product_id": "x", "sku_id": "y"
+        "delegated_admin_email": "a@b.com", "license_config": ""
     }).status_code == 401
     # health probe stays open for Cloud Run
     assert client.get("/healthz").status_code == 200
@@ -27,7 +27,7 @@ def test_iap_enforced_allows_super_admin(monkeypatch):
     monkeypatch.setattr("app.auth._verify_iap_assertion", lambda a: {"email": "boss@example.com"})
     monkeypatch.setattr("app.auth.is_super_admin", lambda e: True)
     mock_config = {
-        "monitored_groups": [], "product_id": "Google-Apps", "sku_id": "101031",
+        "monitored_groups": [], "license_config": "", "license_label": "",
         "delegated_admin_email": "admin@example.com", "cron_expression": "0 2 * * *",
         "notification_emails": [], "notify_on": "failures",
     }
@@ -49,8 +49,8 @@ def test_dashboard_route():
     """Verify dashboard renders HTML."""
     mock_config = {
         "monitored_groups": ["team@example.com"],
-        "product_id": "Google-Apps",
-        "sku_id": "101031",
+        "license_config": "",
+        "license_label": "",
         "delegated_admin_email": "admin@example.com",
         "cron_expression": "0 2 * * *"
     }
@@ -75,27 +75,77 @@ def test_api_save_groups():
         assert data["monitored_groups"] == ["group1@domain.com"]
 
 
-def test_api_save_settings():
-    """Verify saving settings via API."""
-    with patch("app.main.update_config", return_value={}):
-        response = client.post(
-            "/api/settings",
-            json={
-                "delegated_admin_email": "admin@test.com",
-                "product_id": "101047",
-                "sku_id": "1010470001"
-            }
-        )
+_LC = "projects/750/locations/us/licenseConfigs/gemini_ent"
+
+
+def test_api_save_settings_with_valid_subscription():
+    gem = MagicMock()
+    gem.list_license_configs.return_value = [{"name": _LC, "label": "Gemini Enterprise — us"}]
+    with patch("app.main.update_config", return_value={}), \
+         patch("app.main.GeminiLicenseClient", return_value=gem):
+        response = client.post("/api/settings", json={
+            "delegated_admin_email": "admin@test.com", "license_config": _LC,
+        })
         assert response.status_code == 200
         assert response.json()["success"] is True
+
+
+def test_api_save_settings_rejects_workspace_sku():
+    with patch("app.main.update_config", return_value={}):
+        response = client.post("/api/settings", json={
+            "delegated_admin_email": "admin@test.com", "license_config": "Google-Apps",
+        })
+        assert response.status_code == 400
+
+
+def test_api_save_settings_rejects_unknown_subscription():
+    gem = MagicMock()
+    gem.list_license_configs.return_value = [{"name": _LC, "label": "x"}]
+    with patch("app.main.update_config", return_value={}), \
+         patch("app.main.GeminiLicenseClient", return_value=gem):
+        response = client.post("/api/settings", json={
+            "delegated_admin_email": "admin@test.com",
+            "license_config": "projects/750/locations/us/licenseConfigs/other",
+        })
+        assert response.status_code == 400
+
+
+def test_settings_view_renders_subscription_dropdown():
+    mock_config = {
+        "monitored_groups": [], "license_config": _LC, "license_label": "Gemini Enterprise — us",
+        "delegated_admin_email": "admin@example.com", "cron_expression": "0 2 * * *",
+    }
+    gem = MagicMock()
+    gem.list_license_configs.return_value = [
+        {"name": _LC, "label": "Gemini Enterprise — 50 seats — us — Free trial [ACTIVE]"},
+    ]
+    with patch("app.main.get_config", return_value=mock_config), \
+         patch("app.main.GeminiLicenseClient", return_value=gem):
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert "Gemini Enterprise License Subscription" in r.text
+        assert "Free trial [ACTIVE]" in r.text
+        assert "Product ID" not in r.text and "SKU ID" not in r.text
+
+
+def test_settings_view_handles_license_api_error():
+    mock_config = {"monitored_groups": [], "license_config": "", "license_label": "",
+                   "delegated_admin_email": "a@e.com", "cron_expression": "0 2 * * *"}
+    gem = MagicMock()
+    gem.list_license_configs.side_effect = RuntimeError("permission denied")
+    with patch("app.main.get_config", return_value=mock_config), \
+         patch("app.main.GeminiLicenseClient", return_value=gem):
+        r = client.get("/settings")
+        assert r.status_code == 200
+        assert "Could not list license subscriptions" in r.text
 
 
 def test_schedule_view_renders_notification_settings():
     """The Sync Schedule page shows saved notification recipients + mode."""
     mock_config = {
         "monitored_groups": [],
-        "product_id": "Google-Apps",
-        "sku_id": "101031",
+        "license_config": "",
+        "license_label": "",
         "delegated_admin_email": "admin@example.com",
         "cron_expression": "0 2 * * *",
         "notification_emails": ["ops@example.com"],

@@ -49,8 +49,12 @@
             <ul class="text-xs font-mono text-slate-700 space-y-1 pl-2">
                 <li>&bull; <code class="bg-slate-200/70 px-1 py-0.5 rounded">https://www.googleapis.com/auth/admin.directory.group.readonly</code></li>
                 <li>&bull; <code class="bg-slate-200/70 px-1 py-0.5 rounded">https://www.googleapis.com/auth/admin.directory.user.readonly</code></li>
-                <li>&bull; <code class="bg-slate-200/70 px-1 py-0.5 rounded">https://www.googleapis.com/auth/apps.licensing</code></li>
+                <li>&bull; <code class="bg-slate-200/70 px-1 py-0.5 rounded">https://www.googleapis.com/auth/gmail.send</code> <span class="text-slate-400">(only for run notifications)</span></li>
             </ul>
+            <p class="text-xs text-slate-500">
+                Gemini Enterprise licenses are managed via the Discovery Engine API using the service account
+                directly (no DWD) — the service account needs the <strong>Gemini Enterprise Admin</strong> role.
+            </p>
         </div>
     </div>
 
@@ -70,38 +74,34 @@
                 <p class="text-xs text-slate-400 mt-1">A super admin or delegated admin user in your Google Workspace domain.</p>
             </div>
 
-            <!-- Product ID -->
-            <div>
-                <label for="product-id" class="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                    Product ID
+            <!-- Gemini Enterprise license subscription -->
+            <div class="md:col-span-2">
+                <label for="license-config" class="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                    Gemini Enterprise License Subscription
                 </label>
-                <input type="text" id="product-id" value="{{ config.product_id }}" placeholder="Google-Apps" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-blue-500 focus:border-blue-500 bg-white">
-                <p class="text-xs text-slate-400 mt-1">Common values: <code class="text-blue-600">Google-Apps</code> or <code class="text-blue-600">101047</code></p>
-            </div>
-
-            <!-- SKU ID -->
-            <div>
-                <label for="sku-id" class="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                    SKU ID
-                </label>
-                <input type="text" id="sku-id" value="{{ config.sku_id }}" placeholder="101031" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-blue-500 focus:border-blue-500 bg-white">
-                <p class="text-xs text-slate-400 mt-1">Gemini Enterprise: <code class="text-blue-600">1010470001</code> | Specified: <code class="text-blue-600">101031</code></p>
-            </div>
-        </div>
-
-        <!-- SKU Presets Helper -->
-        <div class="pt-2">
-            <p class="text-xs font-semibold text-slate-600 mb-2">Select SKU Preset:</p>
-            <div class="flex flex-wrap gap-2">
-                <button type="button" onclick="setSkuPreset('Google-Apps', '101031')" class="px-3 py-1.5 border border-slate-300 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-50 transition">
-                    Standard Preset (Google-Apps / 101031)
-                </button>
-                <button type="button" onclick="setSkuPreset('101047', '1010470001')" class="px-3 py-1.5 border border-slate-300 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-50 transition">
-                    Gemini Enterprise (101047 / 1010470001)
-                </button>
-                <button type="button" onclick="setSkuPreset('101047', '1010470003')" class="px-3 py-1.5 border border-slate-300 rounded-md text-xs font-medium text-slate-700 hover:bg-slate-50 transition">
-                    Gemini Business (101047 / 1010470003)
-                </button>
+                {% if license_error %}
+                <div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+                    <i class="fa-solid fa-triangle-exclamation mr-1"></i> {{ license_error }}
+                </div>
+                <input type="text" id="license-config" value="{{ config.license_config }}"
+                    placeholder="projects/PROJECT_NUMBER/locations/us/licenseConfigs/SUBSCRIPTION_ID"
+                    class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-blue-500 focus:border-blue-500 bg-white">
+                <p class="text-xs text-slate-400 mt-1">Discovery Engine license config resource name.</p>
+                {% else %}
+                <select id="license-config" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500 bg-white">
+                    <option value="">— none selected —</option>
+                    {% for c in license_configs %}
+                    <option value="{{ c.name }}" {% if c.name == config.license_config %}selected{% endif %}>{{ c.label }}</option>
+                    {% endfor %}
+                    {% if config.license_config and config.license_config not in (license_configs | map(attribute='name') | list) %}
+                    <option value="{{ config.license_config }}" selected>{{ config.license_label or config.license_config }} (not currently listed)</option>
+                    {% endif %}
+                </select>
+                <p class="text-xs text-slate-400 mt-1">
+                    Subscriptions from the Gemini Enterprise console. Only Gemini Enterprise licenses are assignable —
+                    Google Workspace SKUs are not.
+                </p>
+                {% endif %}
             </div>
         </div>
 
@@ -116,12 +116,6 @@
 
 {% block scripts %}
 <script>
-    function setSkuPreset(prod, sku) {
-        document.getElementById('product-id').value = prod;
-        document.getElementById('sku-id').value = sku;
-        showToast(`Filled preset: Product=${prod}, SKU=${sku}`, 'info');
-    }
-
     async function runDwdTest() {
         const btn = document.getElementById('test-dwd-btn');
         const box = document.getElementById('dwd-result-box');
@@ -187,8 +181,7 @@
 
         const payload = {
             delegated_admin_email: document.getElementById('admin-email').value.trim(),
-            product_id: document.getElementById('product-id').value.trim(),
-            sku_id: document.getElementById('sku-id').value.trim(),
+            license_config: (document.getElementById('license-config').value || '').trim(),
         };
 
         try {
@@ -202,7 +195,7 @@
             if (response.ok) {
                 showToast('Settings saved to Firestore successfully.', 'success');
             } else {
-                showToast(`Error saving settings: ${data.message || data.error}`, 'error');
+                showToast(`Error saving settings: ${data.detail || data.message || data.error}`, 'error');
             }
         } catch (err) {
             showToast('Failed to save settings: ' + err.message, 'error');

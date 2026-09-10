@@ -69,6 +69,7 @@ ROLES=(
   "roles/iam.serviceAccountUser"
   "roles/artifactregistry.admin"
   "roles/logging.logWriter"
+  "roles/discoveryengine.admin"   # Gemini Enterprise license management
 )
 
 for role in "${ROLES[@]}"; do

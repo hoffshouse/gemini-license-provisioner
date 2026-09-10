@@ -78,6 +78,7 @@ impersonates to deploy. Steps 3 and 5 (`scripts/setup_wif.sh`) grant it:
 | Role | Scope | Purpose |
 | :--- | :--- | :--- |
 | `roles/datastore.user` | project | Read/write config and sync history in Firestore |
+| `roles/discoveryengine.admin` | project | List Gemini Enterprise license subscriptions; check and assign user licenses |
 | `roles/cloudscheduler.admin` | project | The **Sync Schedule** page edits the scheduler job at runtime |
 | `roles/logging.logWriter` | project | Structured logs |
 | `roles/iam.serviceAccountTokenCreator` | **on itself** | Sign JWTs for **keyless Domain-Wide Delegation** — without it, Test Connection returns `404: Domain not found` |
@@ -95,8 +96,8 @@ impersonates to deploy. Steps 3 and 5 (`scripts/setup_wif.sh`) grant it:
 | Privilege | Held by | Needed for |
 | :--- | :--- | :--- |
 | **Super Admin** (one-time) | the admin doing Step 4 | Add the Domain-Wide Delegation entry in the Admin Console. DWD cannot be delegated to a custom admin role. |
-| Admin roles: **Groups → Read**, **Users → Read**, and license management (Super Admin covers all three) | the delegated-admin user (`${DELEGATED_ADMIN_EMAIL}`) | The app calls Admin SDK Directory (`admin.directory.group.readonly`, `admin.directory.user.readonly`) and Enterprise License Manager (`apps.licensing`) **as this user** |
-| An assignable **Gemini Enterprise** SKU with available seats | the Workspace tenant | Licenses to hand out during sync |
+| Admin roles: **Groups → Read**, **Users → Read** (Super Admin covers both) | the delegated-admin user (`${DELEGATED_ADMIN_EMAIL}`) | The app reads groups/members via the Admin SDK Directory API **as this user**. (Gemini Enterprise licenses are managed separately — by the service account, not via DWD.) |
+| A **Gemini Enterprise** subscription (license config) in the GCP project, with free seats | the GCP project (Gemini Enterprise console → *Manage subscriptions*) | Licenses to hand out during sync |
 
 The delegated-admin user must be **active** (not suspended) and licensed. A Super Admin
 account is the simplest choice; a custom admin role works only if it grants the Directory
@@ -109,7 +110,7 @@ read and licensing privileges above.
 ```bash
 gcloud services enable \
   admin.googleapis.com \
-  licensing.googleapis.com \
+  discoveryengine.googleapis.com \
   cloudscheduler.googleapis.com \
   firestore.googleapis.com \
   run.googleapis.com \
@@ -150,6 +151,7 @@ gcloud iam service-accounts create "${SA_NAME}" \
 # Project-level roles (runtime + CI/CD deploy)
 for ROLE in \
   roles/datastore.user \
+  roles/discoveryengine.admin \
   roles/cloudscheduler.admin \
   roles/logging.logWriter \
   roles/run.admin \
@@ -202,10 +204,11 @@ Lets the service account read Google Groups and assign Gemini licenses to users 
 5. **Client ID**: paste the Unique Numeric Client ID from Step 3.
 6. **OAuth Scopes** (comma-delimited):
    ```text
-   https://www.googleapis.com/auth/admin.directory.group.readonly,https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/apps.licensing,https://www.googleapis.com/auth/gmail.send
+   https://www.googleapis.com/auth/admin.directory.group.readonly,https://www.googleapis.com/auth/admin.directory.user.readonly,https://www.googleapis.com/auth/gmail.send
    ```
-   `gmail.send` is only needed for **run notification emails** (Step 8). Omit it if
-   you will not use notifications — everything else still works.
+   `gmail.send` is only needed for **run notification emails** (Step 8); omit it
+   otherwise. Gemini Enterprise license management does **not** use DWD — no
+   `apps.licensing` scope is required.
 7. Click **Authorize**.
 
 ---
@@ -264,7 +267,8 @@ Artifact Registry, and deploy to Cloud Run.
 1. Open the Cloud Run URL printed at the end of the workflow (or from the GCP Console).
 2. **Settings &amp; Test**:
    - Set **Delegated Admin Email** to `${DELEGATED_ADMIN_EMAIL}` and **Save**.
-   - Confirm **Product ID** (`Google-Apps` or `101047`) and **SKU ID** (`101031` or `1010470001`).
+   - Pick the **Gemini Enterprise License Subscription** from the dropdown (populated
+     from the project's Discovery Engine license configs) and **Save**.
    - Click **Test Connection**.
 3. **Monitored Groups**: select the Google Groups to track, then **Save**.
 4. **Sync Schedule**: confirm/adjust the cron frequency, then **Update Cloud Scheduler**.

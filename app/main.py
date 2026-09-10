@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.firestore_db import get_config, update_config, get_sync_history
 from app.workspace_client import WorkspaceClient
+from app.gemini_licensing import GeminiLicenseClient, is_valid_config_name as gem_is_valid_config_name
 from app.sync_worker import run_license_sync
 from app.scheduler_service import SchedulerService
 from app import auth
@@ -108,8 +109,7 @@ class NotificationsPayload(BaseModel):
 
 class SettingsPayload(BaseModel):
     delegated_admin_email: str
-    product_id: str
-    sku_id: str
+    license_config: str = ""   # Discovery Engine license config resource name
 
 
 class SyncTriggerPayload(BaseModel):
@@ -192,8 +192,22 @@ async def schedule_view(request: Request, principal: Optional[str] = Depends(req
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_view(request: Request, principal: Optional[str] = Depends(require_super_admin)):
-    """System settings and DWD connectivity test view."""
+    """System settings, DWD connectivity test, and Gemini license subscription picker."""
     config = get_config()
+    license_configs: List[Dict[str, Any]] = []
+    license_error: Optional[str] = None
+    try:
+        license_configs = GeminiLicenseClient().list_license_configs()
+        if not license_configs:
+            license_error = (
+                "No Gemini Enterprise license subscriptions found in this project. "
+                "Create one in the Gemini Enterprise console, or check that the "
+                "service account has the Gemini Enterprise Admin role."
+            )
+    except Exception as e:
+        logger.error("Failed to list Gemini license configs: %s", e)
+        license_error = f"Could not list license subscriptions: {e}"
+
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
@@ -201,6 +215,8 @@ async def settings_view(request: Request, principal: Optional[str] = Depends(req
             "active_page": "settings",
             "config": config,
             "principal": principal,
+            "license_configs": license_configs,
+            "license_error": license_error,
         }
     )
 
@@ -303,21 +319,37 @@ async def update_notifications(payload: NotificationsPayload, _: Optional[str] =
 
 @app.post("/api/settings")
 async def save_settings(payload: SettingsPayload, _: Optional[str] = Depends(require_super_admin)):
-    """Update Delegated Admin Email, Product ID, and SKU ID in Firestore."""
+    """Update the delegated admin and the selected Gemini Enterprise license subscription."""
+    updates: Dict[str, Any] = {"delegated_admin_email": payload.delegated_admin_email.strip()}
+
+    license_config = payload.license_config.strip()
+    if license_config:
+        if not gem_is_valid_config_name(license_config):
+            raise HTTPException(
+                status_code=400,
+                detail=("Not a Gemini Enterprise license subscription "
+                        "(projects/*/locations/*/licenseConfigs/*). Workspace product/SKU IDs are not supported."),
+            )
+        try:
+            available = {c["name"]: c for c in GeminiLicenseClient().list_license_configs()}
+        except Exception as e:
+            logger.error("Could not validate license_config against the project: %s", e)
+            raise HTTPException(status_code=502, detail=f"Could not verify the subscription: {e}")
+        if license_config not in available:
+            raise HTTPException(status_code=400, detail="That subscription does not exist in this project.")
+        updates["license_config"] = license_config
+        updates["license_label"] = available[license_config].get("label", license_config)
+    else:
+        updates["license_config"] = ""
+        updates["license_label"] = ""
+
     try:
-        updated = update_config({
-            "delegated_admin_email": payload.delegated_admin_email.strip(),
-            "product_id": payload.product_id.strip(),
-            "sku_id": payload.sku_id.strip(),
-        })
-        return {
-            "success": True,
-            "message": "Settings saved successfully.",
-            "config": updated
-        }
+        updated = update_config(updates)
     except Exception as e:
         logger.error("Failed to save settings: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+    return {"success": True, "message": "Settings saved successfully.", "config": updated}
 
 
 @app.post("/api/test-connection")

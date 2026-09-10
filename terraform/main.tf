@@ -28,14 +28,15 @@ locals {
 # -----------------------------------------------------------------------------
 locals {
   services = [
-    "admin.googleapis.com",
-    "licensing.googleapis.com",
+    "admin.googleapis.com",            # Admin SDK Directory (group / user reads via DWD)
+    "discoveryengine.googleapis.com",  # Gemini Enterprise license configs + user licenses
     "cloudscheduler.googleapis.com",
     "firestore.googleapis.com",
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
     "iamcredentials.googleapis.com",
     "cloudbuild.googleapis.com",
+    "gmail.googleapis.com",            # only used for run-notification emails
   ]
 }
 
@@ -87,6 +88,15 @@ resource "google_project_iam_member" "sa_scheduler_admin" {
 resource "google_project_iam_member" "sa_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.app_sa.email}"
+}
+
+# Manage Gemini Enterprise licenses (list license configs, list/assign user
+# licenses via the Discovery Engine API). This is called with the service
+# account's own credentials - not Domain-Wide Delegation.
+resource "google_project_iam_member" "sa_gemini_licenses" {
+  project = var.project_id
+  role    = "roles/discoveryengine.admin"
   member  = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
@@ -182,13 +192,11 @@ resource "google_cloud_run_v2_service" "provisioner" {
         name  = "PUBLIC_BASE_URL"
         value = var.public_base_url
       }
+      # The Gemini Enterprise license subscription is chosen on the Settings page
+      # (stored in Firestore). Optional headless override:
       env {
-        name  = "PRODUCT_ID"
-        value = var.product_id
-      }
-      env {
-        name  = "SKU_ID"
-        value = var.sku_id
+        name  = "LICENSE_CONFIG"
+        value = var.license_config
       }
       env {
         name  = "CLOUD_SCHEDULER_JOB_NAME"

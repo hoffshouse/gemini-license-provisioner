@@ -360,6 +360,10 @@ resource "google_cloud_scheduler_job" "sync_job" {
       "Content-Type" = "application/json"
     }
 
+    # The Admin API's jobs:run rejects an empty body with 400 INVALID_ARGUMENT;
+    # RunJobRequest with no overrides is just "{}".
+    body = base64encode("{}")
+
     oauth_token {
       service_account_email = google_service_account.scheduler_sa.email
     }

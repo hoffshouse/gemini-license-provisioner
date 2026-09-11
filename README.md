@@ -286,6 +286,20 @@ endpoints and views, the notification builder/dispatch, and the auth gate
 
 ## Status
 
-Internal tooling shared as‑is. No formal support or SLA. Review
+Open source, run without a formal SLA. Review
 [setup_instructions.md → Security Model](setup_instructions.md#security-model) before any
 non‑trivial use, and treat the runtime service account as highly privileged.
+
+---
+
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to propose a change and the local dev/test
+setup. Every pull request requires review from a code owner (see
+[`.github/CODEOWNERS`](.github/CODEOWNERS)) before it can be merged. Found a security
+issue? See [SECURITY.md](SECURITY.md) instead of filing a public issue.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
